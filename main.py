@@ -12,9 +12,11 @@ import pylab as pl
 from sklearn import svm, datasets, cross_validation
 from sklearn.decomposition import PCA
 from sklearn.grid_search import GridSearchCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import f1_score
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn import cross_validation
 
 training = 'T-61_3050_training_dataset.csv'
 test = 'T-61_3050_test_dataset.csv'
@@ -50,14 +52,12 @@ def count_equal(y1, y2):
             matched += 1
     return matched
 
-def print_results(clf, trainData, trainTarget, testData, testTarget):
+def print_results(clf, trainPredict, trainTarget, testPredict, testTarget):
     print 'Classifier', clf
-    testPredict = clf.predict(testData)
     test_match = count_equal(testPredict, testTarget)
     print 'Matched in test set', test_match / float(len(testTarget))
     print 'F1 score in test set', f1_score(testTarget, testPredict,
     pos_label=None)
-    trainPredict = clf.predict(trainData)
     train_match = count_equal(trainPredict, trainTarget)
     print 'Matched in training set', train_match / float(len(trainTarget))
     print 'F1 score in training set', f1_score(trainTarget, trainPredict,
@@ -95,17 +95,19 @@ def plot_data():
             plot_features(trainData[:,i], trainData[:,j], trainQuality, header[i], header[j])
 
 def scale(X):
-    return (X - np.min(X)) / (np.max(X) - np.min(X))
+    return (X - np.mean(X)) / (np.max(X) - np.min(X))
 
 def train_predict(clf_constructor):
     print '== Color accuracy =='
     clf = clf_constructor()
     clf.fit(trainData, trainColor)
-    print_results(clf, trainData, trainColor, testData, testColor)
+    print_results(clf, clf.predict(trainData), trainColor,
+                  clf.predict(testData), testColor)
     print '== Quality accuracy =='
     clf = clf_constructor()
     clf.fit(trainData, trainQuality)
-    print_results(clf, trainData, trainQuality, testData, testQuality)
+    print_results(clf, clf.predict(trainData), trainQuality,
+                  clf.predict(testData), testQuality)
 
 def train_predict_two_clf_one_each_type(clf_constructor):
     print '== Color accuracy =='
@@ -113,7 +115,8 @@ def train_predict_two_clf_one_each_type(clf_constructor):
     # This has a pretty good accuracy, > 90%.
     clf_type = clf_constructor()
     clf_type.fit(trainData, trainColor)
-    print_results(clf_type, trainData, trainColor, testData, testColor)
+    print_results(clf_type, clf_type.predict(trainData), trainColor,
+                  clf_type.predict(testData), testColor)
     print '== Quality accuracy =='
     # Init two classifiers, one for each type of the wine (red/white).
     clfs = {label: clf_constructor() for label in np.unique(trainColor)}
@@ -131,12 +134,55 @@ def train_predict_two_clf_one_each_type(clf_constructor):
         indexes = np.where(testPredictType == label)[0]
         y_pred = clfs[label].predict(testData[indexes])
         testPredictQuality[indexes] = y_pred
-    test_match = count_equal(testPredictQuality, testQuality)
-    print 'Matched in test set', test_match / float(len(testQuality))
-    print 'F1 score in test set', f1_score(testQuality, testPredictQuality, pos_label=None)
+    trainPredictQuality = np.empty(len(trainQuality))
+    # Predict training accuracy too.
+    for label in np.unique(trainColor):
+        indexes = np.where(trainColor == label)[0]
+        y_pred = clfs[label].predict(trainData[indexes])
+        trainPredictQuality[indexes] = y_pred
+    print_results(clfs, trainPredictQuality, trainQuality,
+                  testPredictQuality, testQuality)
+
+def make_features_gaussian(x):
+    y = np.empty_like(x)
+    # I've tried these out on the training set and this is what i came up
+    # with.
+    functions = {
+        0: lambda x: np.log(x),
+        1: lambda x: np.power(x, 0.05),
+        2: lambda x: np.power(x, 0.65),
+        3: lambda x: np.power(x, 0.6),
+        4: lambda x: np.power(x, 0.05),
+        5: lambda x: np.power(x, 0.4),
+        6: lambda x: np.power(x, 0.6),
+        7: lambda x: np.power(x, 0.5),
+        8: lambda x: x,
+        9: lambda x: np.power(x, 0.05),
+        10: lambda x: np.power(x, .05),
+    }
+    for i in range(x.shape[1]):
+        y[:,i] = functions[i](x[:,i])
+    return y
+
+def pick_k_from_CV(choices_for_k, clf_constructor, X, y, test_size=0.4):
+    best_k, best_score = None, None
+    # Do it several times as the training split is random.
+    i = 0
+    while i < 10:
+        X_train, X_test, y_train, y_test = cross_validation.train_test_split(X, y,
+        test_size=test_size)
+        for k in choices_for_k:
+            clf = clf_constructor(k)
+            clf.fit(X_train, y_train)
+            score = clf.score(X_test, y_test)
+            if not best_k or best_score < score:
+                best_k = k
+                best_score = score
+        i += 1
+    return best_k, best_score
 
 def main(args):
-    #global trainData, testData
+    global trainData, testData
     #trainData = scale(trainData)
     #testData = scale(testData)
 
@@ -146,18 +192,47 @@ def main(args):
     # See if features have gaussian-like distribution and maybe adjust them.
     if args[0] == 'plot_normal_distribution':
         # x0 <- log(x0), x1 <- log(x1)
-        pl.hist(trainData[:,1], bins=100)
+        x = trainData[:,4]
+        pl.hist(np.power(x, 0.05), bins=50)
+        pl.xlabel('f(x) = x^0.05; f(%s)' % header[4])
         pl.show()
 
     if args[0] == 'naive_bayes':
+        trainData = make_features_gaussian(trainData)
+        testData = make_features_gaussian(testData)
         train_predict(lambda: GaussianNB())
+        print ''
         train_predict_two_clf_one_each_type(lambda: GaussianNB())
     if args[0] == 'knn':
-        train_predict(lambda: KNeighborsClassifier(n_neighbors=5))
-        train_predict_two_clf_one_each_type(lambda: KNeighborsClassifier(n_neighbors=5))
+        # Deciding for the minkovski p parameter. Have decided for
+        # n_neighbors=18 the same way, parametrizing it and checking with CV.
+        #clf_constructor = lambda x: KNeighborsClassifier(n_neighbors=10, p=1)
+        #k = pick_k_from_CV(range(1,11), clf_constructor, trainData, trainQuality)
+        #print k
+
+        clf_constructor = lambda: KNeighborsClassifier(n_neighbors=10, p=1)
+        train_predict(clf_constructor)
+        print ''
+        train_predict_two_clf_one_each_type(clf_constructor)
     if args[0] == 'svm':
-        train_predict(lambda: svm.SVC(gamma=0.001, C=100.))
-        train_predict_two_clf_one_each_type(lambda: svm.SVC(gamma=0.001, C=100.))
+        #clf_constructor = lambda k: svm.SVC(gamma=0.001, C=float(k))
+        #k = pick_k_from_CV(range(1,201), clf_constructor, trainData, trainQuality)
+        #print k
+        clf_constructor = lambda: svm.SVC(gamma=0.001, C=100.)
+        train_predict(clf_constructor)
+        print ''
+        train_predict_two_clf_one_each_type(clf_constructor)
+    if args[0] == 'logistic_regression':
+        # Deciding for the minkovski p parameter. Have decided for
+        # n_neighbors=18 the same way, parametrizing it and checking with CV.
+        clf_constructor = lambda k: LogisticRegression(C=k)
+        k = pick_k_from_CV(np.linspace(0.001,4,10), clf_constructor, trainData, trainQuality)
+        print k
+
+        clf_constructor = lambda: LogisticRegression(C=0.8)
+        train_predict(clf_constructor)
+        print ''
+        train_predict_two_clf_one_each_type(clf_constructor)
 
     if args[0] == 'pca3d':
         pca = PCA(n_components=3)
